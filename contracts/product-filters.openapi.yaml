@@ -1,0 +1,195 @@
+openapi: 3.1.0
+info:
+  title: shop-api
+  version: 1.1.0
+  description: |
+    In-memory product catalog with server-side filtering, sorting, pagination and facet counts.
+    Agreed between shop-api (backend) and shop-web (frontend); approved 2026-11-27.
+servers:
+  - url: http://localhost:4000
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { const: ok }
+  /products:
+    get:
+      summary: List products with filters, sort, pagination and facet counts
+      description: |
+        All filters are optional and combine with AND; values inside `category` combine with OR.
+        Unknown parameter names are ignored. Every parameter except `category` must appear at most
+        once and must not be empty. All validation failures are reported together in one 400.
+        With no filter or sort parameters the response lists the catalog in id order, as before.
+      parameters:
+        - name: category
+          in: query
+          description: Exact, case-sensitive category name. Repeat for several (OR). An unknown name is a 400.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/Category' }
+        - name: minPrice
+          in: query
+          description: Inclusive lower bound in USD (same unit as Product.price). No rounding is applied.
+          schema: { type: number, minimum: 0 }
+        - name: maxPrice
+          in: query
+          description: Inclusive upper bound in USD. Must be >= minPrice when both are given.
+          schema: { type: number, minimum: 0 }
+        - name: minRating
+          in: query
+          description: Matches products with rating >= minRating.
+          schema: { type: number, minimum: 0, maximum: 5 }
+        - name: inStock
+          in: query
+          description: '"true" returns only in-stock products; "false" or missing applies no filter.'
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: sort
+          in: query
+          description: Missing means catalog order (id ascending). Ties are always broken by id ascending.
+          schema: { type: string, enum: [price_asc, price_desc, rating_desc] }
+        - name: page
+          in: query
+          description: 1-based. A page past totalPages returns 200 with an empty items list.
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        '200':
+          description: One page of filtered products
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductPage' }
+        '400':
+          description: One or more invalid query parameters
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: BAD_REQUEST
+                  message: Invalid query parameters
+                  details:
+                    - { param: category, value: Toys, message: unknown category }
+                    - { param: minPrice, value: '-5', message: must be a number >= 0 }
+  /products/{id}:
+    get:
+      summary: Get one product
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The product
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+components:
+  schemas:
+    Category:
+      type: string
+      enum: [Electronics, Books, Home & Kitchen, Fashion, Sports & Outdoors]
+    Product:
+      type: object
+      required: [id, name, description, price, category, brand, rating, reviewCount, inStock, imageUrl]
+      properties:
+        id: { type: string, examples: [p001] }
+        name: { type: string }
+        description: { type: string }
+        price: { type: number, description: USD }
+        category: { $ref: '#/components/schemas/Category' }
+        brand: { type: string }
+        rating: { type: number, minimum: 0, maximum: 5 }
+        reviewCount: { type: integer, minimum: 0 }
+        inStock: { type: boolean }
+        imageUrl: { type: string, format: uri }
+    ProductPage:
+      type: object
+      required: [items, total, page, limit, totalPages, facets]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Product' }
+        total: { type: integer, description: Number of products matching all filters }
+        page: { type: integer }
+        limit: { type: integer }
+        totalPages: { type: integer, description: 'ceil(total / limit); 0 when total is 0' }
+        facets: { $ref: '#/components/schemas/Facets' }
+    Facets:
+      type: object
+      description: Each facet applies every active filter except its own.
+      required: [categories, rating, inStock, price]
+      properties:
+        categories:
+          type: array
+          description: Always all 5 categories in Category enum order, zeros included. Ignores `category`.
+          items:
+            type: object
+            required: [value, count]
+            properties:
+              value: { $ref: '#/components/schemas/Category' }
+              count: { type: integer, minimum: 0 }
+        rating:
+          type: array
+          description: Buckets in order min 4, 3, 2, 1; count of rating >= min. Ignores `minRating`.
+          items:
+            type: object
+            required: [min, count]
+            properties:
+              min: { type: integer, enum: [4, 3, 2, 1] }
+              count: { type: integer, minimum: 0 }
+        inStock:
+          type: object
+          description: In-stock products matching the other filters. Ignores `inStock`.
+          required: [count]
+          properties:
+            count: { type: integer, minimum: 0 }
+        price:
+          type: object
+          description: Lowest and highest price among products matching the other filters. Ignores minPrice/maxPrice. Both null when none match.
+          required: [min, max]
+          properties:
+            min: { type: [number, 'null'] }
+            max: { type: [number, 'null'] }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [BAD_REQUEST, NOT_FOUND] }
+            message: { type: string }
+            details:
+              type: array
+              description: Present on BAD_REQUEST for query validation; one entry per problem.
+              items:
+                type: object
+                required: [param, message]
+                properties:
+                  param: { type: string }
+                  value:
+                    description: The rejected raw input; an array of raw strings when a single-value parameter was repeated.
+                    oneOf:
+                      - { type: string }
+                      - { type: array, items: { type: string } }
+                  message: { type: string }
